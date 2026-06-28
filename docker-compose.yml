@@ -1,0 +1,100 @@
+# ============================================================
+# miao-infra — 共享基础设施
+# ============================================================
+# MySQL 8.4 + Redis 7，供 miao-toolbox / miao-ai 共用。
+# 独立于任何业务项目，生命周期不受单个项目影响。
+#
+# 首次部署：
+#   cd ~/apps/miao-infra
+#   cat > .env <<EOF
+#   MYSQL_ROOT_PASSWORD=xxx
+#   MYSQL_USER=miao
+#   MYSQL_PASSWORD=xxx
+#   REDIS_PASSWORD=xxx
+#   EOF
+#   docker compose up -d
+#
+# 初始化业务库（只需执行一次）：
+#   docker exec miao-mysql mysql -u root -p"$MYSQL_ROOT_PASSWORD" -e "
+#     CREATE DATABASE IF NOT EXISTS miao_toolbox CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+#     CREATE DATABASE IF NOT EXISTS miao_ai       CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+#     GRANT ALL PRIVILEGES ON miao_toolbox.* TO 'miao'@'%';
+#     GRANT ALL PRIVILEGES ON miao_ai.*       TO 'miao'@'%';
+#     FLUSH PRIVILEGES;
+#   "
+#
+# 接入方（miao-toolbox / miao-ai）在自己的 compose 里：
+#   networks:
+#     miao-infra-net:
+#       external: true
+#       name: miao-infra-net
+#   services:
+#     xxx:
+#       networks: [miao-infra-net]
+# ============================================================
+
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: miao-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?必须设置 MYSQL_ROOT_PASSWORD}
+      MYSQL_USER: ${MYSQL_USER:-miao}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?必须设置 MYSQL_PASSWORD}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+08:00
+    volumes:
+      - mysql-data:/var/lib/mysql
+    networks:
+      - miao-infra-net
+    healthcheck:
+      test:
+        - CMD
+        - mysqladmin
+        - ping
+        - -h
+        - 127.0.0.1
+        - -u
+        - root
+        - -p${MYSQL_ROOT_PASSWORD}
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    container_name: miao-redis
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_PASSWORD:?必须设置 REDIS_PASSWORD}
+      - --appendonly
+      - "yes"
+    volumes:
+      - redis-data:/data
+    networks:
+      - miao-infra-net
+    healthcheck:
+      test:
+        - CMD
+        - redis-cli
+        - -a
+        - ${REDIS_PASSWORD}
+        - ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  mysql-data:
+  redis-data:
+
+networks:
+  miao-infra-net:
+    name: miao-infra-net
+    driver: bridge
