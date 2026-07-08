@@ -1,0 +1,44 @@
+name: CD
+
+# 仅 push 到 main 时部署（PR 不触发）
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: cd-main
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # 引用 prod 环境：secrets 需在 Settings → Environments → prod 中配置，
+    # 并可在此开启保护规则（如部署前需审批、仅 main 可部署）。
+    environment: prod
+    steps:
+      - name: SSH 登录并部署
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -e
+            cd "${{ secrets.SSH_DEPLOY_PATH || '~/apps/miao-infra' }}"
+
+            echo ">>> git pull"
+            git pull --ff-only
+
+            echo ">>> docker compose pull"
+            docker compose pull
+
+            echo ">>> docker compose up -d"
+            docker compose up -d
+
+            echo ">>> 状态"
+            docker compose ps
+
+            # 回收未被引用的旧镜像，释放磁盘（可选，不删 volume）
+            docker image prune -f
