@@ -30,17 +30,20 @@ jobs:
             set -e
             cd "${{ vars.SSH_DEPLOY_PATH || '$HOME/apps/miao-infra' }}"
 
+            # 合并基础 compose 与服务器覆盖（发布非默认端口到 0.0.0.0）
+            COMPOSE="docker compose -f docker-compose.yml -f docker-compose.server.yml"
+
             echo ">>> git pull"
             git pull --ff-only
 
             echo ">>> docker compose pull"
-            docker compose pull
+            $COMPOSE pull
 
             echo ">>> docker compose up -d"
-            docker compose up -d
+            $COMPOSE up -d
 
             echo ">>> 状态"
-            docker compose ps
+            $COMPOSE ps
 
             # 回收未被引用的旧镜像，释放磁盘（可选，不删 volume）
             docker image prune -f

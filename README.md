@@ -77,6 +77,23 @@ MYSQL_URL=jdbc:mysql://miao-mysql:3306/miao_toolbox?useUnicode=true&characterEnc
 REDIS_HOST=miao-redis
 ```
 
+### 从外部 / 其他机器连接（非默认端口 + IP 白名单）
+
+若业务应用部署在别的机器、需经公网访问本基础设施，使用宿主机发布的**非默认端口**
+（容器名 + 默认端口 `3306/6379` 仅限同 `miao-infra-net` 网络内使用）：
+
+```env
+# miao-ai（外部访问）
+DATABASE_URL=mysql+aiomysql://miao:PASSWORD@ts.yunmiao.site:33306/miao_ai?charset=utf8mb4
+# miao-toolbox（外部访问）
+MYSQL_URL=jdbc:mysql://ts.yunmiao.site:33306/miao_toolbox?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
+REDIS_HOST=ts.yunmiao.site
+REDIS_PORT=16379
+```
+
+> 这两个端口（33306 / 16379）仅对白名单 IP 开放，不全公网暴露；具体放行在云安全组 /
+> 服务器防火墙配置，不在此仓库内。
+
 ## 运维
 
 ```bash
