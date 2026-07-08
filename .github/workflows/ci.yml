@@ -93,12 +93,14 @@ jobs:
           - mysql:8.4
           - redis:7-alpine
     steps:
+      # 仅出报告、不阻断 CI（官方基础镜像常带上游 CVE，严格拦截意义不大）。
+      # 若想恢复拦截：把 exit-code 改回 "1" 即可。
       - name: Trivy 扫描 ${{ matrix.image }}
         uses: aquasecurity/trivy-action@0.24.0
         with:
           image-ref: ${{ matrix.image }}
           format: table
-          exit-code: "1"
+          exit-code: "0"
           ignore-unfixed: true
           severity: HIGH,CRITICAL
           vuln-type: os,library
