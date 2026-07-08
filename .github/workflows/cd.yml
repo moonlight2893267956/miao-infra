@@ -28,7 +28,7 @@ jobs:
           script_stop: true
           script: |
             set -e
-            cd "${{ vars.SSH_DEPLOY_PATH || '~/apps/miao-infra' }}"
+            cd "${{ vars.SSH_DEPLOY_PATH || '$HOME/apps/miao-infra' }}"
 
             echo ">>> git pull"
             git pull --ff-only
