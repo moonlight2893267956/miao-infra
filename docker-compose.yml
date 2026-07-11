@@ -106,16 +106,13 @@ services:
         condition: service_healthy
     environment:
       MODE: standalone
-      # 复用 miao-mysql 存储
-      SPRING_DATASOURCE_PLATFORM: mysql
+      # 复用 miao-mysql 存储（mysql 模式由挂载的 application.properties 显式激活，
+      # 因为 Nacos 2.5.x 默认注释了 spring.datasource.platform）
       MYSQL_SERVICE_HOST: miao-mysql
       MYSQL_SERVICE_PORT: "3306"
       MYSQL_SERVICE_DB_NAME: nacos_config
       MYSQL_SERVICE_USER: ${MYSQL_USER:-miao}
       MYSQL_SERVICE_PASSWORD: ${MYSQL_PASSWORD:?必须设置 MYSQL_PASSWORD}
-      # MySQL 8 的 caching_sha2_password 认证需要允许公钥检索，否则 Nacos 启动连不上报
-      # "Public Key Retrieval is not allowed"
-      MYSQL_SERVICE_DB_PARAM: characterEncoding=utf8&connectTimeout=10000&socketTimeout=30000&autoReconnect=true&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
       # 鉴权
       NACOS_AUTH_ENABLE: "true"
       NACOS_AUTH_IDENTITY_KEY: ${NACOS_AUTH_IDENTITY_KEY:-nacos}
@@ -124,6 +121,8 @@ services:
       # 控制台管理员（首次启动后修改默认密码）
       NACOS_AUTH_USER_AGENT_AUTH_WHITE_ENABLE: "true"
     volumes:
+      # 覆盖容器内默认 application.properties，显式启用 mysql 数据源
+      - ./nacos/application.properties:/home/nacos/conf/application.properties:ro
       - nacos-logs:/home/nacos/logs
       - nacos-data:/home/nacos/data
     networks:
