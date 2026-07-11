@@ -113,6 +113,9 @@ services:
       MYSQL_SERVICE_DB_NAME: nacos_config
       MYSQL_SERVICE_USER: ${MYSQL_USER:-miao}
       MYSQL_SERVICE_PASSWORD: ${MYSQL_PASSWORD:?必须设置 MYSQL_PASSWORD}
+      # MySQL 8 的 caching_sha2_password 认证需要允许公钥检索，否则 Nacos 启动连不上报
+      # "Public Key Retrieval is not allowed"
+      MYSQL_SERVICE_DB_PARAM: characterEncoding=utf8&connectTimeout=10000&socketTimeout=30000&autoReconnect=true&allowPublicKeyRetrieval=true
       # 鉴权
       NACOS_AUTH_ENABLE: "true"
       NACOS_AUTH_IDENTITY_KEY: ${NACOS_AUTH_IDENTITY_KEY:-nacos}
