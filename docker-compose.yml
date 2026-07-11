@@ -118,8 +118,7 @@ services:
       NACOS_AUTH_IDENTITY_KEY: ${NACOS_AUTH_IDENTITY_KEY:-nacos}
       NACOS_AUTH_IDENTITY_VALUE: ${NACOS_AUTH_IDENTITY_VALUE:-nacos}
       # JWT 签名密钥：必须是 base64 编码且解码后 ≥ 32 字节（用 `openssl rand -base64 32` 生成）。
-      # 设为强制必填，避免误用不合规的占位默认值导致启动报 "secret key must >= 32 bytes"。
-      NACOS_AUTH_TOKEN: ${NACOS_AUTH_TOKEN:?必须设置 NACOS_AUTH_TOKEN（openssl rand -base64 32 生成）}
+      NACOS_AUTH_TOKEN: ${NACOS_AUTH_TOKEN}
       # 控制台管理员（首次启动后修改默认密码）
       NACOS_AUTH_USER_AGENT_AUTH_WHITE_ENABLE: "true"
     volumes:
