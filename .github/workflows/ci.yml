@@ -5,10 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  # 真实拉起整套服务（含 Nacos）的验证较重，改为手动触发，避免每次 push 都卡在 health 阶段
-  workflow_dispatch:
 
-# 防止并发 CI 抢占同一 runner 资源（本仓库轻量，主要是健康测试要拉镜像）
+# 防止并发 CI 抢占同一 runner 资源（本仓库轻量，仅做静态校验）
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: false
@@ -47,60 +45,3 @@ jobs:
           EOF
       - name: 校验 compose 配置
         run: docker compose config -q
-
-  # ---------------------------------------------------------------
-  # 3. 真实拉起并等待 healthcheck 通过（仅手动 workflow_dispatch 触发）
-  #    push/PR 不跑这步：Nacos 镜像拉取 + 首次启动建表耗时长，
-  #    放在必需链路上会让 CI 每次都卡在 health 阶段。
-  #    真实启动验证交给 CD 在服务器执行，或手动在 Actions 页面触发本 workflow。
-  # ---------------------------------------------------------------
-  healthy-up:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    needs: compose-validate
-    steps:
-      - uses: actions/checkout@v4
-      - name: 写入 CI 用 dummy .env
-        run: |
-          cat > .env <<'EOF'
-          MYSQL_ROOT_PASSWORD=ci_root_pw_change_me
-          MYSQL_USER=miao
-          MYSQL_PASSWORD=ci_miao_pw_change_me
-          REDIS_PASSWORD=ci_redis_pw_change_me
-          NACOS_AUTH_IDENTITY_KEY=ci_nacos
-          NACOS_AUTH_IDENTITY_VALUE=ci_nacos
-          NACOS_AUTH_TOKEN=ci_token_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnop
-          EOF
-      - name: 启动服务
-        run: docker compose up -d
-      - name: 等待健康（mysql/redis 硬等待，nacos 宽松）
-        run: |
-          # mysql/redis 是核心依赖，必须 healthy 才算通过
-          for i in $(seq 1 36); do
-            unhealthy=$(docker compose ps --format '{{.Service}} {{.Health}}' \
-              | awk '$1!="nacos" && $2!="healthy"{print $1}')
-            if [ -z "$unhealthy" ]; then
-              echo "mysql/redis 全部 healthy ✅"
-              break
-            fi
-            echo "等待核心服务 ($i/36)：$unhealthy"
-            sleep 5
-          done
-
-          # nacos 单机模式首次启动 + 建表较慢，单独再等最多 ~5 分钟
-          for i in $(seq 1 60); do
-            state=$(docker compose ps --format '{{.Service}} {{.Health}}' | awk '$1=="nacos"{print $2}')
-            if [ "$state" = "healthy" ]; then
-              echo "nacos healthy ✅"
-              docker compose ps
-              exit 0
-            fi
-            echo "等待 nacos ($i/60)：当前 $state"
-            sleep 5
-          done
-          echo "::warning::nacos 未在宽松窗口内 healthy，但核心服务已就绪"
-          docker compose ps
-          exit 0
-      - name: 清理（总是执行）
-        if: always()
-        run: docker compose down -v
