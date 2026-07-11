@@ -28,13 +28,22 @@ jobs:
           script_stop: true
           script: |
             set -e
-            cd "${{ vars.SSH_DEPLOY_PATH || '$HOME/apps/miao-infra' }}"
+            # 部署目录：优先用 Environment variable SSH_DEPLOY_PATH，否则回退到 $HOME/apps/miao-infra
+            DEPLOY_PATH="${{ vars.SSH_DEPLOY_PATH }}"
+            if [ -z "$DEPLOY_PATH" ]; then
+              DEPLOY_PATH="$HOME/apps/miao-infra"
+            fi
+            cd "$DEPLOY_PATH"
 
             # 合并基础 compose 与服务器覆盖（发布非默认端口到 0.0.0.0）
             COMPOSE="docker compose -f docker-compose.yml -f docker-compose.server.yml"
 
-            echo ">>> git pull"
-            git pull --ff-only
+            echo ">>> 同步最新代码（丢弃服务器本地未提交改动，保证与 origin/main 一致）"
+            # 注意：不能用 `git pull`，一旦服务器工作区有本地修改（如手动 scp 覆盖）
+            # 就会 merge 冲突导致整个部署失败。CD 服务器本不应有未提交改动，
+            # 因此用 fetch + reset --hard 强制对齐远程。
+            git fetch --quiet origin
+            git reset --hard "origin/${GITHUB_REF_NAME:-main}"
 
             echo ">>> docker compose pull"
             $COMPOSE pull

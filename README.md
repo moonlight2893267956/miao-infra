@@ -10,7 +10,7 @@ miao 生态共享基础设施：MySQL + Redis + Nacos。
 |---|---|---|---|---|
 | MySQL 8.4 | `mysql:8.4` | `miao-mysql` | `miao-infra-net` | `3306` / `33306` |
 | Redis 7 | `redis:7-alpine` | `miao-redis` | `miao-infra-net` | `6379` / `16379` |
-| Nacos 2.5 | `nacos/nacos-server:v2.5.1` | `miao-nacos` | `miao-infra-net` | `8848,9848` / `38848,39848` |
+| Nacos 2.4 | `nacos/nacos-server:v2.4.3` | `miao-nacos` | `miao-infra-net` | `8848,9848` / `38848,39848` |
 
 > Nacos 复用 `miao-mysql` 存储（`nacos_config` 库），不内嵌 Derby。
 
@@ -57,7 +57,14 @@ docker exec miao-mysql mysql -u root -p"$MYSQL_ROOT_PASSWORD" -e "
   FLUSH PRIVILEGES;
 "
 ```
-> `nacos_config` 库的表由 Nacos 首次启动时自动创建（会检测 `nacos_config` 库中是否已有 `config_info` 等表，没有则自动执行 `mysql-schema.sql`），无需手动导入建表 SQL。
+> ⚠️ **`nacos_config` 库的表不会自动创建**。Nacos 在 mysql 模式下不会自动执行建表脚本，
+> 必须手动导入官方 `mysql-schema.sql`，否则启动会报 `No Data Source set` / `dumpservice bean construction failure`。
+> 初始化（只需一次）：
+> ```bash
+> docker exec miao-nacos cat /home/nacos/conf/mysql-schema.sql \
+>   | docker exec -i miao-mysql mysql -u miao -p"$MYSQL_PASSWORD" nacos_config
+> # 验证：USE nacos_config; SHOW TABLES; 应看到 config_info / users / roles 等 12 张表
+> ```
 
 业务项目自己负责 alembic / Flyway 迁移。
 
