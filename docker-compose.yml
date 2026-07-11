@@ -1,7 +1,7 @@
 # ============================================================
 # miao-infra — 共享基础设施
 # ============================================================
-# MySQL 8.4 + Redis 7，供 miao-toolbox / miao-ai 共用。
+# MySQL 8.4 + Redis 7 + Nacos，供 miao-toolbox / miao-ai 共用。
 # 独立于任何业务项目，生命周期不受单个项目影响。
 #
 # 首次部署：
@@ -11,6 +11,8 @@
 #   MYSQL_USER=miao
 #   MYSQL_PASSWORD=xxx
 #   REDIS_PASSWORD=xxx
+#   NACOS_AUTH_IDENTITY_KEY=nacos
+#   NACOS_AUTH_IDENTITY_VALUE=nacos
 #   EOF
 #   docker compose up -d
 #
@@ -18,10 +20,15 @@
 #   docker exec miao-mysql mysql -u root -p"$MYSQL_ROOT_PASSWORD" -e "
 #     CREATE DATABASE IF NOT EXISTS miao_toolbox CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 #     CREATE DATABASE IF NOT EXISTS miao_ai       CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+#     CREATE DATABASE IF NOT EXISTS nacos_config  CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 #     GRANT ALL PRIVILEGES ON miao_toolbox.* TO 'miao'@'%';
 #     GRANT ALL PRIVILEGES ON miao_ai.*       TO 'miao'@'%';
+#     GRANT ALL PRIVILEGES ON nacos_config.*  TO 'miao'@'%';
 #     FLUSH PRIVILEGES;
 #   "
+#
+# Nacos 数据库表初始化（只需执行一次）：
+#   # 先确保 nacos_config 库已创建，然后导入官方建表脚本（首次启动 Nacos 后也可通过 Web 界面初始化）
 #
 # 接入方（miao-toolbox / miao-ai）在自己的 compose 里：
 #   networks:
@@ -90,9 +97,48 @@ services:
       timeout: 5s
       retries: 5
 
+  nacos:
+    image: nacos/nacos-server:v2.5.1
+    container_name: miao-nacos
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      MODE: standalone
+      # 复用 miao-mysql 存储
+      SPRING_DATASOURCE_PLATFORM: mysql
+      MYSQL_SERVICE_HOST: miao-mysql
+      MYSQL_SERVICE_PORT: "3306"
+      MYSQL_SERVICE_DB_NAME: nacos_config
+      MYSQL_SERVICE_USER: ${MYSQL_USER:-miao}
+      MYSQL_SERVICE_PASSWORD: ${MYSQL_PASSWORD:?必须设置 MYSQL_PASSWORD}
+      # 鉴权
+      NACOS_AUTH_ENABLE: "true"
+      NACOS_AUTH_IDENTITY_KEY: ${NACOS_AUTH_IDENTITY_KEY:-nacos}
+      NACOS_AUTH_IDENTITY_VALUE: ${NACOS_AUTH_IDENTITY_VALUE:-nacos}
+      NACOS_AUTH_TOKEN: ${NACOS_AUTH_TOKEN:-SecretKey012345678901234567890123456789012345678901234567890123456789}
+      # 控制台管理员（首次启动后修改默认密码）
+      NACOS_AUTH_USER_AGENT_AUTH_WHITE_ENABLE: "true"
+    volumes:
+      - nacos-logs:/home/nacos/logs
+      - nacos-data:/home/nacos/data
+    networks:
+      - miao-infra-net
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - curl -f http://127.0.0.1:8848/nacos/v1/console/health/readiness || exit 1
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
 volumes:
   mysql-data:
   redis-data:
+  nacos-logs:
+  nacos-data:
 
 networks:
   miao-infra-net:

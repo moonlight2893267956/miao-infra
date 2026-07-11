@@ -1,15 +1,18 @@
 # miao-infra
 
-miao 生态共享基础设施：MySQL + Redis。
+miao 生态共享基础设施：MySQL + Redis + Nacos。
 
-供 [`miao-toolbox`](../miao-toolbox) 和 [`miao-ai`](../miao-ai) 共用。两个项目都通过外部网络 `miao-infra-net` 连接，不在自己的 compose 里定义数据库/缓存容器。
+供 [`miao-toolbox`](../miao-toolbox) 和 [`miao-ai`](../miao-ai) 共用。两个项目都通过外部网络 `miao-infra-net` 连接，不在自己的 compose 里定义数据库/缓存/配置中心容器。
 
 ## 服务清单
 
-| 服务 | 镜像 | 容器名 | 网络 |
-|---|---|---|---|
-| MySQL 8.4 | `mysql:8.4` | `miao-mysql` | `miao-infra-net` |
-| Redis 7 | `redis:7-alpine` | `miao-redis` | `miao-infra-net` |
+| 服务 | 镜像 | 容器名 | 网络 | 端口（内网/外网） |
+|---|---|---|---|---|
+| MySQL 8.4 | `mysql:8.4` | `miao-mysql` | `miao-infra-net` | `3306` / `33306` |
+| Redis 7 | `redis:7-alpine` | `miao-redis` | `miao-infra-net` | `6379` / `16379` |
+| Nacos 2.5 | `nacos/nacos-server:v2.5.1` | `miao-nacos` | `miao-infra-net` | `8848,9848` / `38848,39848` |
+
+> Nacos 复用 `miao-mysql` 存储（`nacos_config` 库），不内嵌 Derby。
 
 固定网络名 `miao-infra-net`，两个项目都引用它。
 
@@ -24,14 +27,19 @@ MYSQL_ROOT_PASSWORD=YOUR_ROOT_PASSWORD
 MYSQL_USER=miao
 MYSQL_PASSWORD=YOUR_MIAO_PASSWORD
 REDIS_PASSWORD=YOUR_REDIS_PASSWORD
+NACOS_AUTH_IDENTITY_KEY=nacos
+NACOS_AUTH_IDENTITY_VALUE=nacos
+NACOS_AUTH_TOKEN=YOUR_NACOS_AUTH_TOKEN_SECRET_BASE64
 EOF
 ```
+> `NACOS_AUTH_TOKEN` 用于服务端安全密钥，建议生成 32 字节以上 Base64 编码的随机串。`NACOS_AUTH_IDENTITY_KEY/VALUE` 用于 Nacos 服务间身份校验。
+> Nacos 控制台默认账号密码为 `nacos/nacos`，首次登录后建议在 Web 控制台修改。
 
 ### 2. 启动
 
 ```bash
 docker compose up -d
-docker compose ps    # 应看到 miao-mysql + miao-redis 都 healthy
+docker compose ps    # 应看到 miao-mysql + miao-redis + miao-nacos 都 healthy
 ```
 
 ### 3. 初始化业务库
@@ -42,11 +50,14 @@ docker compose ps    # 应看到 miao-mysql + miao-redis 都 healthy
 docker exec miao-mysql mysql -u root -p"$MYSQL_ROOT_PASSWORD" -e "
   CREATE DATABASE IF NOT EXISTS miao_toolbox CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
   CREATE DATABASE IF NOT EXISTS miao_ai       CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+  CREATE DATABASE IF NOT EXISTS nacos_config  CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
   GRANT ALL PRIVILEGES ON miao_toolbox.* TO 'miao'@'%';
   GRANT ALL PRIVILEGES ON miao_ai.*       TO 'miao'@'%';
+  GRANT ALL PRIVILEGES ON nacos_config.*  TO 'miao'@'%';
   FLUSH PRIVILEGES;
 "
 ```
+> `nacos_config` 库的表由 Nacos 首次启动时自动创建（会检测 `nacos_config` 库中是否已有 `config_info` 等表，没有则自动执行 `mysql-schema.sql`），无需手动导入建表 SQL。
 
 业务项目自己负责 alembic / Flyway 迁移。
 
@@ -67,7 +78,7 @@ networks:
     name: miao-infra-net
 ```
 
-连接串用容器名（`miao-mysql` / `miao-redis`），不是 `localhost`：
+连接串用容器名（`miao-mysql` / `miao-redis` / `miao-nacos`），不是 `localhost`：
 
 ```env
 # miao-ai
@@ -75,6 +86,10 @@ DATABASE_URL=mysql+aiomysql://miao:PASSWORD@miao-mysql:3306/miao_ai?charset=utf8
 # miao-toolbox
 MYSQL_URL=jdbc:mysql://miao-mysql:3306/miao_toolbox?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
 REDIS_HOST=miao-redis
+# Nacos 配置中心 / 注册中心（内网）
+NACOS_SERVER_ADDR=miao-nacos:8848
+NACOS_USERNAME=nacos
+NACOS_PASSWORD=nacos
 ```
 
 ### 从外部 / 其他机器连接（非默认端口 + IP 白名单）
@@ -89,10 +104,15 @@ DATABASE_URL=mysql+aiomysql://miao:PASSWORD@ts.yunmiao.site:33306/miao_ai?charse
 MYSQL_URL=jdbc:mysql://ts.yunmiao.site:33306/miao_toolbox?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
 REDIS_HOST=ts.yunmiao.site
 REDIS_PORT=16379
+# Nacos（外部访问）
+NACOS_SERVER_ADDR=ts.yunmiao.site:38848
+NACOS_USERNAME=nacos
+NACOS_PASSWORD=nacos
 ```
 
-> 这两个端口（33306 / 16379）仅对白名单 IP 开放，不全公网暴露；具体放行在云安全组 /
+> 这些端口（33306 / 16379 / 38848 / 39848）仅对白名单 IP 开放，不全公网暴露；具体放行在云安全组 /
 > 服务器防火墙配置，不在此仓库内。
+> Nacos 控制台通过 `http://ts.yunmiao.site:38848/nacos` 访问。
 
 ## 运维
 
@@ -103,13 +123,20 @@ docker compose ps
 # 看日志
 docker compose logs -f mysql
 docker compose logs -f redis
+docker compose logs -f nacos
 
-# 备份 MySQL
+# 备份 MySQL（含 nacos_config 库）
 docker exec miao-mysql mysqldump -u root -p"$MYSQL_ROOT_PASSWORD" \
   --all-databases --single-transaction > backup-$(date +%Y%m%d).sql
 
 # 进入 MySQL
 docker exec -it miao-mysql mysql -u miao -p miao_ai
+
+# 进入 Nacos 容器
+docker exec -it miao-nacos bash
+
+# Nacos 控制台（内网）
+open http://miao-nacos:8848/nacos
 
 # 停机
 docker compose down
@@ -123,7 +150,8 @@ docker compose down
 
 ## 设计原则
 
-- **解耦基础设施与业务**：业务项目不关心 MySQL/Redis 怎么起，infra 也不关心谁用它。
-- **单例 MySQL**：不创建多个 MySQL 实例跟谁抢资源 / 端口。
-- **数据持久化**：volume 名 `mysql-data` / `redis-data`，绑本地存储。
-- **健康检查**：两个服务都配 healthcheck，业务项目 `depends_on` 时可以 `condition: service_healthy`。
+- **解耦基础设施与业务**：业务项目不关心 MySQL/Redis/Nacos 怎么起，infra 也不关心谁用它。
+- **单例 MySQL**：不创建多个 MySQL 实例跟谁抢资源 / 端口；Nacos 也复用同一 MySQL 实例（`nacos_config` 库），符合单例原则。
+- **数据持久化**：volume 名 `mysql-data` / `redis-data` / `nacos-logs` / `nacos-data`，绑本地存储。
+- **健康检查**：所有服务都配 healthcheck，业务项目 `depends_on` 时可以 `condition: service_healthy`。
+- **Nacos 鉴权**：默认开启（`NACOS_AUTH_ENABLE=true`），服务间调用需携带 `accessToken`，控制台需登录。
