@@ -27,8 +27,11 @@
 #     FLUSH PRIVILEGES;
 #   "
 #
-# Nacos 数据库表初始化（只需执行一次）：
-#   # 先确保 nacos_config 库已创建，然后导入官方建表脚本（首次启动 Nacos 后也可通过 Web 界面初始化）
+# Nacos 数据库表初始化（只需执行一次，否则会报 No Data Source set）：
+#   # 先确保 nacos_config 库已创建，再导入官方建表脚本：
+#   docker exec miao-nacos cat /home/nacos/conf/mysql-schema.sql \
+#     | docker exec -i miao-mysql mysql -u miao -p"$MYSQL_PASSWORD" nacos_config
+#   # 验证：USE nacos_config; SHOW TABLES; 应看到 config_info / users / roles 等 12 张表
 #
 # 接入方（miao-toolbox / miao-ai）在自己的 compose 里：
 #   networks:
@@ -98,7 +101,9 @@ services:
       retries: 5
 
   nacos:
-    image: nacos/nacos-server:v2.5.1
+    # 使用社区稳定版 2.4.x：DataSource 注入链成熟，支持用 SPRING_DATASOURCE_PLATFORM
+    # 环境变量直接激活 mysql 模式（2.5.x 有 No DataSource set 的注入问题，已弃用）。
+    image: nacos/nacos-server:v2.4.3
     container_name: miao-nacos
     restart: unless-stopped
     depends_on:
@@ -106,8 +111,8 @@ services:
         condition: service_healthy
     environment:
       MODE: standalone
-      # 复用 miao-mysql 存储（mysql 模式由挂载的 application.properties 显式激活，
-      # 因为 Nacos 2.5.x 默认注释了 spring.datasource.platform）
+      # 激活 mysql 外部数据源（2.4.x 官方支持该环境变量，数据源 Bean 可正常创建）
+      SPRING_DATASOURCE_PLATFORM: mysql
       MYSQL_SERVICE_HOST: miao-mysql
       MYSQL_SERVICE_PORT: "3306"
       MYSQL_SERVICE_DB_NAME: nacos_config
@@ -122,8 +127,8 @@ services:
       # 控制台管理员（首次启动后修改默认密码）
       NACOS_AUTH_USER_AGENT_AUTH_WHITE_ENABLE: "true"
     volumes:
-      # 覆盖容器内默认 application.properties，显式启用 mysql 数据源
-      - ./nacos/application.properties:/home/nacos/conf/application.properties:ro
+      # 不再覆盖 application.properties：2.4.x 用上面的环境变量即可激活 mysql 模式，
+      # 避免跨版本配置项差异（2.5.x 的覆盖文件反而会干扰 DataSource 注入）。
       - nacos-logs:/home/nacos/logs
       - nacos-data:/home/nacos/data
     networks:
