@@ -111,6 +111,11 @@ services:
         condition: service_healthy
     environment:
       MODE: standalone
+      # JVM 堆内存：默认 -Xms1g -Xmx1g 对 2Gi 小内存机器过于浪费（占整机 ~45% 且常触发 Swap）。
+      # 配置量不大时 512m 足够，立省约 500MB 物理内存。官方镜像读取以下两个环境变量。
+      JVM_XMS: 512m
+      JVM_XMX: 512m
+      JVM_XMN: 256m
       # 激活 mysql 外部数据源（2.4.x 官方支持该环境变量，数据源 Bean 可正常创建）
       SPRING_DATASOURCE_PLATFORM: mysql
       MYSQL_SERVICE_HOST: miao-mysql
