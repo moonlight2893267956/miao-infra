@@ -118,6 +118,10 @@ services:
       JVM_XMS: 512m
       JVM_XMX: 512m
       JVM_XMN: 256m
+      # 强制 JVM 走 IPv4 栈。Nacos 3.x 默认把 8848/9848/8080 绑定到 IPv6(::)，
+      # 而 docker 端口发布走 IPv4(0.0.0.0:xxxx)，导致 9848(gRPC) 等从 IPv4 进不去、
+      # 表现为 39848 不通/服务注册失败。加此参数后端口改绑 IPv4，发布正常。
+      JAVA_OPT: -Djava.net.preferIPv4Stack=true
       # 激活 mysql 外部数据源（3.2.x 官方仍支持该环境变量，数据源 Bean 可正常创建）
       SPRING_DATASOURCE_PLATFORM: mysql
       MYSQL_SERVICE_HOST: miao-mysql
