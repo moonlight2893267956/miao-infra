@@ -57,7 +57,7 @@ services:
       - --collation-server=utf8mb4_unicode_ci
       - --default-time-zone=+08:00
     volumes:
-      - mysql-data:/var/lib/mysql
+      - miao-toolbox_mysql-data:/var/lib/mysql
     networks:
       - miao-infra-net
     healthcheck:
@@ -101,9 +101,11 @@ services:
       retries: 5
 
   nacos:
-    # 使用社区稳定版 2.4.x：DataSource 注入链成熟，支持用 SPRING_DATASOURCE_PLATFORM
-    # 环境变量直接激活 mysql 模式（2.5.x 有 No DataSource set 的注入问题，已弃用）。
-    image: nacos/nacos-server:v2.4.3
+    # 升级到 Nacos 3.2.x 稳定线（v3.2.2，latest stable patch）。
+    # 3.x 沿用 SPRING_DATASOURCE_PLATFORM / MYSQL_SERVICE_* 环境变量注入 mysql 数据源，
+    # 鉴权变量（NACOS_AUTH_*）在 3.x 仍强制且沿用，无需改动。
+    # 注意：3.2.0+ 移除了 v1/v2 HTTP API，业务客户端需 2.x/3.x SDK（见 README 升级清单）。
+    image: nacos/nacos-server:v3.2.2
     container_name: miao-nacos
     restart: unless-stopped
     depends_on:
@@ -116,13 +118,17 @@ services:
       JVM_XMS: 512m
       JVM_XMX: 512m
       JVM_XMN: 256m
-      # 激活 mysql 外部数据源（2.4.x 官方支持该环境变量，数据源 Bean 可正常创建）
+      # 激活 mysql 外部数据源（3.2.x 官方仍支持该环境变量，数据源 Bean 可正常创建）
       SPRING_DATASOURCE_PLATFORM: mysql
       MYSQL_SERVICE_HOST: miao-mysql
       MYSQL_SERVICE_PORT: "3306"
       MYSQL_SERVICE_DB_NAME: nacos_config
       MYSQL_SERVICE_USER: ${MYSQL_USER:-miao}
       MYSQL_SERVICE_PASSWORD: ${MYSQL_PASSWORD:?必须设置 MYSQL_PASSWORD}
+      # JDBC 连接附加参数：MySQL 8.x 默认 caching_sha2_password 认证，
+      # Nacos 3.2 内置的新版 MySQL Connector/J 要求显式允许公钥获取，否则报
+      # "Public Key Retrieval is not allowed" 导致 DataSource 初始化失败。
+      MYSQL_SERVICE_DB_PARAM: characterEncoding=utf8&connectTimeout=1000&socketTimeout=3000&autoReconnect=true&allowPublicKeyRetrieval=true&useSSL=false
       # 鉴权
       NACOS_AUTH_ENABLE: "true"
       NACOS_AUTH_IDENTITY_KEY: ${NACOS_AUTH_IDENTITY_KEY:-nacos}
@@ -139,16 +145,18 @@ services:
     networks:
       - miao-infra-net
     healthcheck:
+      # Nacos 3.x 已移除 /nacos/v1/console/health/readiness 老端点，改用 metrics 接口探活。
       test:
         - CMD-SHELL
-        - curl -f http://127.0.0.1:8848/nacos/v1/console/health/readiness || exit 1
+        - curl -f http://127.0.0.1:8848/nacos/v1/ns/operator/metrics || exit 1
       interval: 15s
       timeout: 10s
       retries: 20
       start_period: 60s
 
 volumes:
-  mysql-data:
+  miao-toolbox_mysql-data:
+    external: true
   redis-data:
   nacos-logs:
   nacos-data:

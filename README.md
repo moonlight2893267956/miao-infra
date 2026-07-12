@@ -10,7 +10,7 @@ miao 生态共享基础设施：MySQL + Redis + Nacos。
 |---|---|---|---|---|
 | MySQL 8.4 | `mysql:8.4` | `miao-mysql` | `miao-infra-net` | `3306` / `33306` |
 | Redis 7 | `redis:7-alpine` | `miao-redis` | `miao-infra-net` | `6379` / `16379` |
-| Nacos 2.4 | `nacos/nacos-server:v2.4.3` | `miao-nacos` | `miao-infra-net` | `8848,9848` / `38848,39848` |
+| Nacos 3.2 | `nacos/nacos-server:v3.2.2` | `miao-nacos` | `miao-infra-net` | `8848,9848` / `38848,39848` |
 
 > Nacos 复用 `miao-mysql` 存储（`nacos_config` 库），不内嵌 Derby。
 
@@ -65,6 +65,8 @@ docker exec miao-mysql mysql -u root -p"$MYSQL_ROOT_PASSWORD" -e "
 >   | docker exec -i miao-mysql mysql -u miao -p"$MYSQL_PASSWORD" nacos_config
 > # 验证：USE nacos_config; SHOW TABLES; 应看到 config_info / users / roles 等 12 张表
 > ```
+
+> **升级到 3.2.x 见下方「Nacos 2.4 → 3.2 升级指南」**：3.2 比 2.4 多出 3 张 AI 模块表（`pipeline_execution` / `ai_resource` / `ai_resource_version`），共 13 张表，且 3.2.0+ 移除了 v1/v2 HTTP API。
 
 业务项目自己负责 alembic / Flyway 迁移。
 
@@ -154,6 +156,85 @@ docker compose down
 - **MySQL 小版本升级**：改 `image: mysql:8.4` 后的 tag，备份后 `docker compose pull && docker compose up -d`。
 - **Redis 升级**：同理。
 - **迁库**：在另一台机器起一套 miao-infra，mysqldump 导入，切换业务项目的 DATABASE_URL host。
+
+### Nacos 2.4 → 3.2 升级指南（v3.2.2）
+
+> 当前目标稳定版 `nacos/nacos-server:v3.2.2`（3.2 线 latest stable patch）。
+> 3.x 沿用 `SPRING_DATASOURCE_PLATFORM` / `MYSQL_SERVICE_*` 环境变量与 `NACOS_AUTH_*` 鉴权变量，compose 仅需改镜像标签 + 迁库。
+> ⚠️ **3.2.0+ 移除了 v1/v2 HTTP API**，业务客户端必须用 2.x 或 3.x 的 nacos SDK（通常 2.x 客户端兼容 3.x 服务端）。先确认 miao-toolbox / miao-ai 的 nacos 客户端版本 ≥ 2.0。
+
+**步骤 0 — 备份（必须先做）**
+
+```bash
+# 1) 全库逻辑备份
+docker exec miao-mysql mysqldump -u root -p"$MYSQL_ROOT_PASSWORD" \
+  --single-transaction --routines --triggers \
+  --databases nacos_config miao_toolbox miao_ai > backup-$(date +%Y%m%d-%H%M).sql
+
+# 2) Nacos 卷备份（data 内可能含 derby 残留 / 插件，保险起见一并留档）
+docker compose stop nacos
+docker run --rm -v miao-infra_nacos-data:/data -v $(pwd):/backup alpine \
+  tar czf /backup/nacos-data-$(date +%Y%m%d-%H%M).tar.gz -C /data .
+docker run --rm -v miao-infra_nacos-logs:/data -v $(pwd):/backup alpine \
+  tar czf /backup/nacos-logs-$(date +%Y%m%d-%H%M).tar.gz -C /data .
+docker compose start nacos
+```
+
+**步骤 1 — 迁移 nacos_config 表结构（先迁库，再起 3.2 容器）**
+
+3.2 在 2.4 基础上：
+- 新增列：`his_config_info` 的 `publish_type` / `gray_name` / `ext_info`（若从 2.1+ 起，`config_info` 等表的 `encrypted_data_key` 已存在，脚本会自动跳过）。
+- 新增 3 张 AI 表：`pipeline_execution` / `ai_resource` / `ai_resource_version`（共 13 张表）。
+
+增量脚本已随仓库提供：`nacos/mysql-schema-32-upgrade.sql`（幂等，可重复执行）。
+
+```bash
+docker exec -i miao-mysql mysql -u miao -p"$MYSQL_PASSWORD" nacos_config \
+  < nacos/mysql-schema-32-upgrade.sql
+
+# 验证：应返回 13 张表
+docker exec -i miao-mysql mysql -u miao -p"$MYSQL_PASSWORD" nacos_config \
+  -e "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='nacos_config';"
+```
+
+**步骤 2 — 拉取新镜像并重启**
+
+```bash
+docker compose pull nacos
+docker compose up -d nacos
+docker compose ps        # 等 miao-nacos 变 healthy
+docker compose logs -f nacos   # 首次启动会跑 namespace [migrate]，日志看到 migrate 完成即正常
+```
+
+> 3.x 把空 namespace 合并进 `public`，首次启动有一次性迁移，配置量小则很快。
+> 端口与 contextPath 仍默认 `8848` / `/nacos`（3.x 配置项改名叫 `nacos.server.main.port`，本仓库未显式设置，沿用默认），所以 server.yml 的 `38848:8848` 发布映射与 healthcheck 都无需改动。
+
+**步骤 3 — 验收**
+
+- [ ] `docker compose ps` 中 miao-nacos 为 healthy
+- [ ] 控制台 `http://ts.yunmiao.site:38848/nacos` 可登录（账号 nacos / 改过的密码）
+- [ ] 业务项目（miao-toolbox / miao-ai）能正常拉取配置、注册服务
+- [ ] 日志无 `No Data Source set` / `dumpservice bean` 类报错
+
+**回退方案（仅当升级后出现不可恢复问题时）**
+
+Nacos 3.x **无法平滑降级**（已写入 3.x 格式的元数据/命名空间迁移不可逆），回退需回到 2.4.3 镜像 + 恢复步骤 0 的 DB 快照：
+
+```bash
+# 1) 停掉 3.2 容器
+docker compose stop nacos
+
+# 2) 恢复数据库快照（会丢弃升级后所有配置变更，谨慎！）
+docker exec -i miao-mysql mysql -u root -p"$MYSQL_ROOT_PASSWORD" < backup-YYYYMMDD-HHMM.sql
+
+# 3) 改回镜像标签 v2.4.3（在 docker-compose.yml 把 image 改回 nacos/nacos-server:v2.4.3）
+#    也可临时用命令行覆盖：docker compose up -d nacos 前手动改回。
+
+# 4) 重启 2.4.3
+docker compose up -d nacos
+```
+
+> 回退后 3.2 新增的 3 张 AI 表对 2.4.3 无害（不读取），可保留也可手动 `DROP TABLE`；但只要恢复过 DB 快照，这些表已被快照覆盖，无需额外清理。
 
 ## 设计原则
 
