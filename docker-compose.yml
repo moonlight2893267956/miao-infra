@@ -113,15 +113,32 @@ services:
         condition: service_healthy
     environment:
       MODE: standalone
-      # JVM 堆内存：默认 -Xms1g -Xmx1g 对 2Gi 小内存机器过于浪费（占整机 ~45% 且常触发 Swap）。
-      # 配置量不大时 512m 足够，立省约 500MB 物理内存。官方镜像读取以下两个环境变量。
-      JVM_XMS: 512m
-      JVM_XMX: 512m
-      JVM_XMN: 256m
-      # 强制 JVM 走 IPv4 栈。Nacos 3.x 默认把 8848/9848/8080 绑定到 IPv6(::)，
+      # ===== JVM 内存调优（针对 2Gi 小内存机器，2026-11-19 线上事故复盘）=====
+      # 历史：默认 -Xms1g -Xmx1g 占整机 ~45%，2026-07-12 曾降至 512m。
+      # 但实测 RSS 906MB 中堆只占 94M（Full GC 后存活），真正的内存大头是：
+      #   - Nacos 内部 257 个线程 × 默认 1MB 线程栈 ≈ 257M
+      #   - Metaspace 99M
+      #   - DirectByteBuffer / gRPC / Netty 等堆外结构
+      # 因此单纯降堆收益有限，需同步收紧线程栈，并给容器加内存硬上限。
+      #
+      # 堆 512m -> 384m：GC 日志显示存活对象仅 ~94M，384m 仍有 4 倍余量。
+      JVM_XMS: 384m
+      JVM_XMX: 384m
+      JVM_XMN: 192m
+      # Metaspace 显式封顶（镜像默认 320m，实测用量 99m，收紧到 256m 省 ~64m）。
+      # 注意：必须用镜像原生识别的 JVM_MS / JVM_MMS 变量，
+      # 写进 JAVA_OPT 也可以，但走官方变量更不易随镜像升级失效。
+      JVM_MS: 128m
+      JVM_MMS: 256m
+      # 线程栈 1MB -> 512k：Nacos 线程多为 IO 等待型，不会深度递归。
+      # 257 个线程可省约 128MB 物理内存。
+      # 强制 IPv4 栈：Nacos 3.x 默认把 8848/9848/8080 绑定到 IPv6(::)，
       # 而 docker 端口发布走 IPv4(0.0.0.0:xxxx)，导致 9848(gRPC) 等从 IPv4 进不去、
-      # 表现为 39848 不通/服务注册失败。加此参数后端口改绑 IPv4，发布正常。
-      JAVA_OPT: -Djava.net.preferIPv4Stack=true
+      # 表现为 39848 不通/服务注册失败。加 -Djava.net.preferIPv4Stack=true 后端口改绑 IPv4。
+      #
+      # ⚠️ 注意：JAVA_OPT 只能定义一次。YAML 中重复键后值会静默覆盖前值
+      #（本项目 2026-11-19 就踩过：新增的 -Xss512k 被下方旧条目覆盖掉）。
+      JAVA_OPT: -Djava.net.preferIPv4Stack=true -Xss512k
       # 激活 mysql 外部数据源（3.2.x 官方仍支持该环境变量，数据源 Bean 可正常创建）
       SPRING_DATASOURCE_PLATFORM: mysql
       MYSQL_SERVICE_HOST: miao-mysql
@@ -148,6 +165,20 @@ services:
       - nacos-data:/home/nacos/data
     networks:
       - miao-infra-net
+    # 内存硬上限：防止单容器把整机内存吃光（2026-11-19 事故：nacos 占 907M/1896M，
+    # 导致同机 mysql 被大量换出到 swap，所有业务方的数据库连接超时）。
+    #
+    # 取值依据（实测，非估算）：
+    #   - 改配前 RSS 907M（VmHWM 也是 907M，说明这就是真实峰值）
+    #   - 改配后：堆 384M + Metaspace 实际 99M(上限 256M) + 线程栈 257×0.5M≈128M
+    #              + Netty/gRPC/DirectBuffer 等堆外 ≈ 100M  ⇒ 稳态约 650~700M
+    #   - 取 896M：比改配后稳态高约 200M 余量，又比"不设上限"低，
+    #     既能拦住失控增长，又不会因余量过紧导致正常启动被 OOM-kill 循环。
+    # 超限时 cgroup 只杀 nacos 这一个容器并自动重启，不再拖垮同机 MySQL。
+    deploy:
+      resources:
+        limits:
+          memory: 896M
     healthcheck:
       # Nacos 3.x 已移除 /nacos/v1/console/health/readiness 老端点，改用 metrics 接口探活。
       test:
