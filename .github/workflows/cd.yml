@@ -26,6 +26,12 @@ jobs:
           key: ${{ secrets.SSH_KEY }}
           port: ${{ vars.SSH_PORT || 22 }}
           script_stop: true
+          # 默认 10 分钟。本项目镜像是固定版本 tag，正常情况下 pull 会瞬间完成；
+          # 但部署机直连 Docker Hub 不通、需经 clash 代理，实测 132MB 分层 10 分钟
+          # 只能拉到 32MB，会触发 "Run Command Timeout" 导致整次部署失败
+          #（2026-11-19 连续两次踩到）。这里放宽到 20 分钟作为兜底，
+          # 同时下方 pull 已改成只补缺失镜像，正常路径不会走满。
+          command_timeout: 20m
           script: |
             set -e
             # 部署目录：优先用 Environment variable SSH_DEPLOY_PATH，否则回退到 $HOME/apps/miao-infra
@@ -45,17 +51,20 @@ jobs:
             git fetch --quiet origin
             git reset --hard "origin/${GITHUB_REF_NAME:-main}"
 
-            echo ">>> docker compose pull"
-            # 拉取失败不能让整个部署中断：
-            # 本项目的镜像（mysql:8.4 / redis:7-alpine / nacos/nacos-server:v3.2.2）
-            # 都是固定版本，服务器上通常已存在；且部署机直连 Docker Hub 不稳定，
-            # daemon 走的 clash 代理与 registry-mirrors 均可能瞬时不可用
-            #（2026-11-19 实测：registry-1.docker.io TLS handshake timeout、
-            #  镜像加速器被 Cloudflare 人机校验拦截）。
-            # 原实现 `$COMPOSE pull` 在 set -e 下直接中断，导致「代码已更新但容器没重建」
-            # ——配置改动静默不生效。改为容错：拉不到就用本地已有镜像继续 up -d，
-            # 只有镜像本地也不存在时，随后的 up -d 才会真正报错。
-            if ! $COMPOSE pull --ignore-pull-failures; then
+            echo ">>> docker compose pull（仅补缺失镜像）"
+            # 只在本地缺少镜像时才拉取，已存在则跳过（--policy missing）。
+            #
+            # 为什么不无条件 pull：本项目三个镜像都是固定版本 tag
+            # （mysql:8.4 / redis:7-alpine / nacos/nacos-server:v3.2.2），
+            # 一旦拉下来就基本不会变；而部署机直连 Docker Hub 不通、必须走 clash 代理，
+            # 实测 132MB 分层 10 分钟仅拉到 32MB，无条件 pull 会拖满 command_timeout
+            # 使整次部署失败（2026-11-19 连续两次事故）。
+            # 叠加 registry-mirrors 已被 Cloudflare 人机校验拦截，慢是常态。
+            #
+            # --ignore-pull-failures 兜底：即便某个镜像确实缺失且拉取失败，
+            # 也继续往下走，由 `up -d` 给出真正有意义的错误，而不是让部署静默中断
+            #（2026-11-19 教训：pull 中断导致「git 已更新但容器没重建」，配置改动不生效）。
+            if ! $COMPOSE pull --policy missing --ignore-pull-failures; then
               echo "::warning::docker compose pull 失败，将使用本地已有镜像继续部署"
             fi
 
