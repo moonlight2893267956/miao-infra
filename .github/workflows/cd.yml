@@ -46,7 +46,18 @@ jobs:
             git reset --hard "origin/${GITHUB_REF_NAME:-main}"
 
             echo ">>> docker compose pull"
-            $COMPOSE pull
+            # 拉取失败不能让整个部署中断：
+            # 本项目的镜像（mysql:8.4 / redis:7-alpine / nacos/nacos-server:v3.2.2）
+            # 都是固定版本，服务器上通常已存在；且部署机直连 Docker Hub 不稳定，
+            # daemon 走的 clash 代理与 registry-mirrors 均可能瞬时不可用
+            #（2026-11-19 实测：registry-1.docker.io TLS handshake timeout、
+            #  镜像加速器被 Cloudflare 人机校验拦截）。
+            # 原实现 `$COMPOSE pull` 在 set -e 下直接中断，导致「代码已更新但容器没重建」
+            # ——配置改动静默不生效。改为容错：拉不到就用本地已有镜像继续 up -d，
+            # 只有镜像本地也不存在时，随后的 up -d 才会真正报错。
+            if ! $COMPOSE pull --ignore-pull-failures; then
+              echo "::warning::docker compose pull 失败，将使用本地已有镜像继续部署"
+            fi
 
             echo ">>> docker compose up -d"
             $COMPOSE up -d
